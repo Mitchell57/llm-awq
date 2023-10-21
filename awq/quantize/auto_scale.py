@@ -5,6 +5,7 @@ import torch.nn as nn
 from transformers.models.bloom.modeling_bloom import BloomBlock, BloomGelu
 from transformers.models.opt.modeling_opt import OPTDecoderLayer
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaRMSNorm
+from transformers.models.mistral.modeling_mistral import MistralDecoderLayer, MistralRMSNorm
 
 from .qmodule import ScaledActivation
 from ..utils.module import get_op_by_name, get_op_name, set_op_by_name
@@ -174,8 +175,39 @@ def auto_scale_block(module, module_kwargs,
         return (get_op_name(module, prev_op), tuple([get_op_name(module, m) for m in layers]), scales)
 
     scales_list = []  # return the searched scales
+    if isinstance(module, MistralDecoderLayer):
+        scales_list.append(_auto_get_scale(
+            prev_op=module.input_layernorm,
+            layers=[module.self_attn.q_proj,
+                    module.self_attn.k_proj, module.self_attn.v_proj],
+            inp=input_feat['self_attn.q_proj'],
+            module2inspect=module.self_attn, kwargs=module_kwargs,
+        ))
 
-    if isinstance(module, OPTDecoderLayer):
+        # attention out
+        # Please refer to https://github.com/mit-han-lab/llm-awq/pull/67#issue-1850622696
+        if module.self_attn.v_proj.weight.shape == module.self_attn.o_proj.weight.shape:
+            scales_list.append(_auto_get_scale(
+                prev_op=module.self_attn.v_proj,
+                layers=[module.self_attn.o_proj],
+                inp=input_feat['self_attn.o_proj'],
+            ))
+        
+        # linear 1
+        scales_list.append(_auto_get_scale(
+            prev_op=module.post_attention_layernorm,
+            layers=[module.mlp.gate_proj, module.mlp.up_proj],
+            inp=input_feat['mlp.gate_proj'],
+            module2inspect=module.mlp,
+        ))
+
+        # linear 2
+        scales_list.append(_auto_get_scale(
+            prev_op=module.mlp.up_proj,
+            layers=[module.mlp.down_proj],
+            inp=input_feat['mlp.down_proj'],
+        ))
+    elif isinstance(module, OPTDecoderLayer):
         # attention input
         scales_list.append(_auto_get_scale(
             prev_op=module.self_attn_layer_norm,
@@ -355,7 +387,7 @@ def apply_scale(module, scales_list, input_feat_dict=None):
         if isinstance(prev_op, nn.Linear):
             assert len(layers) == 1
             scale_fc_fc(prev_op, layers[0], scales)
-        elif isinstance(prev_op, (nn.LayerNorm, LlamaRMSNorm)):
+        elif isinstance(prev_op, (nn.LayerNorm, LlamaRMSNorm, MistralRMSNorm)):
             scale_ln_fcs(prev_op, layers, scales)
         elif isinstance(prev_op, nn.GELU) or isinstance(prev_op, BloomGelu):
             new_module = ScaledActivation(prev_op, scales)

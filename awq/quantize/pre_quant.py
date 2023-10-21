@@ -8,6 +8,7 @@ from collections import defaultdict
 from transformers.models.bloom.modeling_bloom import BloomForCausalLM
 from transformers.models.opt.modeling_opt import OPTForCausalLM
 from transformers.models.llama.modeling_llama import LlamaForCausalLM
+from transformers.models.mistral.modeling_mistral import MistralForCausalLM
 
 from .auto_scale import auto_scale_block, apply_scale
 from .auto_clip import auto_clip_block, apply_clip
@@ -22,6 +23,8 @@ def get_named_linears(module):
 def get_blocks(model):
     if model.__class__.__name__ == 'LlamaForCausalLM':
         layers = model.model.layers
+    elif isinstance(model, MistralForCausalLM):
+        layers = model.model.layers
     elif isinstance(model, OPTForCausalLM):
         layers = model.model.decoder.layers
     elif isinstance(model, BloomForCausalLM):
@@ -30,12 +33,15 @@ def get_blocks(model):
         layers = model.transformer.blocks
     elif "falcon" in str(model.__class__).lower():
         layers = model.transformer.h
+    
     else:
         raise NotImplementedError(type(model))
     return layers
     
 def move_embed(model, device):
     if isinstance(model, LlamaForCausalLM):
+        model.model.embed_tokens = model.model.embed_tokens.to(device)
+    elif isinstance(model, MistralForCausalLM):
         model.model.embed_tokens = model.model.embed_tokens.to(device)
     elif isinstance(model, OPTForCausalLM):
         model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.to(device)
